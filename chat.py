@@ -102,7 +102,7 @@ def build_rag_prompt(question: str, contexts: List[Dict]) -> Tuple[str, str]:
         "If the answer is not clearly in the context, say you don't know and suggest checking the PDFs.\n"
         "Always mention the source numbers (like Source 1, Source 2) that you used."
     )
-
+    # print(context_text)
     user_message = (
         f"Context:\n{context_text}\n\n"
         f"Question: {question}\n\n"
@@ -119,7 +119,7 @@ def answer_question(question: str) -> Tuple[str, List[Dict]]:
     - return answer and used chunks
     """
     retrieved = search_similar_chunks(question, top_k=5)
-
+    # print(retrieved)
     sys_msg, usr_msg = build_rag_prompt(question, retrieved)
 
     response = client.chat.completions.create(
@@ -152,5 +152,6 @@ if __name__ == "__main__":
 
         print("\n--- Sources used ---")
         for s in sources:
-            print(f"[Source {s['rank']}] {s['source']} (similarity = {s['score']:.4f})")
+            print(f"[Source {s['rank']}] {s['source']} (similarity = {s['score']:.4f}) {s['text']}")
+            print("\n")
         print("\n")
