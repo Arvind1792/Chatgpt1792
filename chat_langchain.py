@@ -7,6 +7,8 @@ from langchain_pinecone import PineconeVectorStore
 
 from langchain_openai import AzureOpenAIEmbeddings, AzureChatOpenAI
 from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
+
 
 load_dotenv()
 
@@ -40,7 +42,7 @@ def load_rag_pipeline():
     vectorstore = PineconeVectorStore(
         index=index,
         embedding=embeddings,
-        text_key="text"
+        text_key="text"   # MUST MATCH metadata["text"]
     )
 
     retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
@@ -53,14 +55,43 @@ def load_rag_pipeline():
         api_version=AZURE_OPENAI_API_VERSION,
         temperature=0
     )
+    
+    prompt_template = """
+    You are a question-answering assistant.
+
+    You MUST follow these rules:
+
+    1. Only answer using the information explicitly present in the retrieved context.
+    2. If the answer is not fully supported by the context, you MUST say:
+    "I don't know. The answer is not clearly available in the provided documents. Please check the PDFs."
+    3. Do NOT use outside knowledge.
+    4. Do NOT guess. Do NOT hallucinate.
+    5. Be concise.
+
+    ---------------------
+    Context from PDFs:
+    {context}
+    ---------------------
+
+    Question: {question}
+
+    Answer:
+    """
+
+    CUSTOM_PROMPT = PromptTemplate(
+        input_variables=["context", "question"],
+        template=prompt_template,
+    )
 
     qa = RetrievalQA.from_chain_type(
         llm=llm,
         retriever=retriever,
-        return_source_documents=True
+        return_source_documents=True,
+        chain_type_kwargs={"prompt": CUSTOM_PROMPT}
     )
 
-    print("\n✨ Chatbot ready! Ask me anything about your PDFs.\n")
+
+    print("\n✨ Chatbot ready! Ask anything about your PDF knowledge base.\n")
     return qa
 
 
@@ -76,13 +107,13 @@ if __name__ == "__main__":
 
         result = qa({"query": query})
 
-        print("\n🔵 Answer:")
+        print("\n🔵 ANSWER:")
         print(result["result"])
-
-        print("\n📚 Retrieved Context Chunks:")
+        print(result)
+        print("\n📚 RETRIEVED CONTEXT CHUNKS:")
         for i, doc in enumerate(result["source_documents"], start=1):
             print(f"\n----- Chunk {i} -----")
-            print(f"Source PDF: {doc.metadata.get('source')}")
-            print("Content:")
-            print(doc.page_content)
+            print(f"📄 Source PDF: {doc.metadata.get('source')}")
+            print("🧩 Content:")
+            print(doc.page_content)  # FULL chunk text
             print("------------------------")

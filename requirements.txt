@@ -1,0 +1,22 @@
+# Core LangChain packages
+langchain>=0.2.0
+langchain-core>=0.2.0
+langchain-community>=0.2.0
+
+# Azure OpenAI & OpenAI client
+openai>=1.40.0
+langchain-openai>=0.1.0
+
+# Pinecone (vector database)
+pinecone>=4.0.0
+langchain-pinecone>=0.1.0
+
+# PDF processing
+pypdf>=4.0.0
+
+# Utilities
+python-dotenv>=1.0.0
+tqdm>=4.66.0
+
+# Optional but recommended for RAG
+tiktoken>=0.7.0
