@@ -6,7 +6,8 @@ from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
 
 from langchain_openai import AzureOpenAIEmbeddings, AzureChatOpenAI
-from langchain.chains import RetrievalQA
+from langchain.chains.retrieval import RetrievalQA
+
 from langchain.prompts import PromptTemplate
 
 
