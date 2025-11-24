@@ -1,0 +1,16 @@
+# Python virtual environment
+.venv/
+
+# Environment secrets
+.env
+
+# RAG generated files
+embeddings.npy
+chunks.pkl
+
+# pdf data folder (optional: only if you don’t want to commit PDFs)
+data/
+
+# Python cache
+__pycache__/
+*.pyc
