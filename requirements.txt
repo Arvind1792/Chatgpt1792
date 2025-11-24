@@ -7,7 +7,7 @@ langchain-community>=0.2.0
 langchain-openai>=0.1.0
 langchain-pinecone>=0.1.0
 langchain-text-splitters>=0.2.0
-
+    
 # -------------------------
 # Pinecone (latest SDK v3+)
 # -------------------------

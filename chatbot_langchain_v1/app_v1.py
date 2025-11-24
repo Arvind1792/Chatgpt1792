@@ -10,6 +10,8 @@ from langchain_pinecone import PineconeVectorStore
 
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableMap, RunnablePassthrough, RunnableLambda
+from cqc import should_use_exa
+from exa_utils import run_exa_search
 
 load_dotenv()
 
@@ -27,17 +29,17 @@ PINECONE_INDEX = os.getenv("PINECONE_INDEX")
 
 def format_docs(docs):
     parts = []
+    print(docs)
     for d in docs:
         src = d.metadata.get("source")
-        txt = d.metadata.get("text") or ""
+        txt = d.page_content or ""
         parts.append(f"[Source: {src}]\n{txt}")
     return "\n\n".join(parts)
 
 
 @st.cache_resource(show_spinner=True)
+@st.cache_resource(show_spinner=True)
 def build_rag_chain():
-    """Build and cache LCEL-based RAG chain + retriever."""
-
     # 1) Embeddings
     embeddings = AzureOpenAIEmbeddings(
         azure_endpoint=AZURE_OPENAI_ENDPOINT,
@@ -58,7 +60,7 @@ def build_rag_chain():
     )
     retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
 
-    # 4) Strict RAG prompt
+    # 4) Prompt
     prompt = ChatPromptTemplate.from_template(
         """
 You are a RAG assistant over a set of PDF documents.
@@ -82,7 +84,7 @@ Answer:
 """
     )
 
-    # 5) LLM
+    # 5) LLM  ✅ we will return this
     llm = AzureChatOpenAI(
         azure_endpoint=AZURE_OPENAI_ENDPOINT,
         azure_deployment=AZURE_OPENAI_CHAT_DEPLOYMENT,
@@ -106,9 +108,48 @@ Answer:
         | llm
     )
 
-    return rag_chain, retriever
+    # IMPORTANT: return llm as well
+    return rag_chain, retriever, llm
 
+def answer_query(query, rag_chain, retriever, llm):
+    """
+    Unified RAG + Exa fallback answer logic.
+    Returns: (exa_context_or_None, answer_text, docs)
+    """
 
+    # Step 1: Retrieve from Pinecone
+    docs = retriever.get_relevant_documents(query)
+
+    # Step 2: Check context quality (CQC)
+    use_exa = should_use_exa(query, docs)
+
+    # Step 3: If Pinecone weak → Exa fallback
+    if use_exa:
+        exa_context = run_exa_search(query)
+
+        final_prompt = f"""
+You are a helpful assistant. Use ONLY the following context to answer.
+
+Context:
+{exa_context}
+
+Question:
+{query}
+
+If the answer is not clearly in the context, say:
+"I don't know. The answer is not clearly available in the provided documents or web results."
+"""
+
+        resp = llm.invoke(final_prompt)
+        answer_text = getattr(resp, "content", str(resp))
+
+        return exa_context, answer_text, docs
+
+    # Step 4: Pinecone context is OK → use normal RAG chain
+    resp = rag_chain.invoke(query)
+    answer_text = getattr(resp, "content", str(resp))
+
+    return None, answer_text, docs
 def main():
     st.set_page_config(page_title="GenAI RAG Bot", page_icon="🤖", layout="wide")
 
@@ -130,7 +171,8 @@ def main():
             st.success("History cleared")
 
     with st.spinner("Loading RAG pipeline..."):
-        rag_chain, retriever = build_rag_chain()
+        rag_chain, retriever, llm = build_rag_chain()
+
 
     # Show history
     for msg in st.session_state.history:
@@ -153,15 +195,22 @@ def main():
         # Run RAG
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                answer_msg = rag_chain.invoke(user_query)
-                answer = getattr(answer_msg, "content", str(answer_msg))
+                exa_used_context, answer, docs = answer_query(
+                    user_query, rag_chain, retriever, llm
+                )
+
+
+                if exa_used_context:
+                    st.warning("⚠️ Pinecone context weak → Used EXA AI fallback")
+                answer = getattr(answer, "content", str(answer))
 
                 # Get context docs
                 docs = retriever.get_relevant_documents(user_query)
+                # st.write(docs)
                 ctx_list = [
                     {
                         "source": d.metadata.get("source"),
-                        "text": d.metadata.get("text"),
+                        "text": d.page_content,
                     }
                     for d in docs
                 ]
