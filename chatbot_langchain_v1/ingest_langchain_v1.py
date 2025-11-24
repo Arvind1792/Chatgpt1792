@@ -24,7 +24,8 @@ AZURE_OPENAI_EMBED_DEPLOYMENT = os.getenv("AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT")
 # --------------------------
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX = os.getenv("PINECONE_INDEX")
-DIMENSION = 3072  # Use 1536 if using text-embedding-3-small
+DIMENSION = 3072  # For text-embedding-3-large
+
 
 # --------------------------
 # Load PDFs
@@ -35,24 +36,29 @@ def load_pdfs(folder_path: str):
         if file.lower().endswith(".pdf"):
             full = os.path.join(folder_path, file)
             print(f"[PDF] Loading {file}")
+
             loader = PyPDFLoader(full)
             pdf_docs = loader.load()
+
             for d in pdf_docs:
                 d.metadata["source"] = file
+
             docs.extend(pdf_docs)
+
     return docs
 
 
 # --------------------------
 # Retry Handler for Embeddings
 # --------------------------
-def embed_with_retry(embedding_model, texts, retries: int = 5, delay: int = 30):
+def embed_with_retry(embedding_model, texts, retries: int = 5, delay: int = 15):
     """
     Embeds text safely with automatic retry on 429 rate limit errors.
     """
     for attempt in range(retries):
         try:
             return embedding_model.embed_documents(texts)
+
         except Exception as e:
             msg = str(e)
             if "RateLimit" in msg or "429" in msg:
@@ -61,6 +67,7 @@ def embed_with_retry(embedding_model, texts, retries: int = 5, delay: int = 30):
                 time.sleep(wait)
             else:
                 raise
+
     raise RuntimeError("❌ Could not embed after several retries.")
 
 
@@ -73,14 +80,27 @@ def ingest_data():
     print("============================\n")
 
     # 1. Load PDFs
-    documents = load_pdfs("data")
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    PDF_DIR = os.path.join(BASE_DIR, "..", "data")
+
+    documents = load_pdfs(PDF_DIR)
+
+    # documents = load_pdfs("data")
     print(f"[INFO] Loaded {len(documents)} pages.")
 
     # 2. Split into text chunks
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200
+    )
+
     chunks = splitter.split_documents(documents)
     chunks = [c for c in chunks if c.page_content.strip()]
     print(f"[INFO] Final chunk count: {len(chunks)}")
+
+    # Assign chunk_id for inline citations
+    for idx, chunk in enumerate(chunks, start=1):
+        chunk.metadata["chunk_id"] = idx
 
     # 3. Initialize Azure Embeddings
     print("\n[EMBED] Initializing Azure Embeddings...")
@@ -113,36 +133,15 @@ def ingest_data():
     print("\n[UPLOAD] Uploading vectors in batches...")
     batch_size = 50
 
-    # for start in range(0, len(chunks), batch_size):
-    #     end = start + batch_size
-    #     batch = chunks[start:end]
-
-    #     batch_texts = [c.page_content for c in batch]
-    #     print(f"   → Embedding batch {start} to {end}")
-
-    #     vectors = embed_with_retry(embed_model, batch_texts)
-
-    #     ids = [f"vec-{i}" for i in range(start, end)]
-    #     metadata = [
-    #         {
-    #             "source": c.metadata.get("source"),
-    #             "text": c.page_content,            # ⬅ ADD THIS LINE
-    #         }
-    #         for c in batch
-    #     ]
-
-    #     index.upsert(
-    #         vectors=[{"id": _id, "values": vec, "metadata": meta}
-    #                 for _id, vec, meta in zip(ids, vectors, metadata)]
-    #     )
-
-    #     print(f"      ✔ Uploaded {len(ids)} vectors")
     for start in range(0, len(chunks), batch_size):
         end = start + batch_size
         batch = chunks[start:end]
 
         batch_texts = [c.page_content for c in batch]
         batch_sources = [c.metadata.get("source") for c in batch]
+        batch_chunk_ids = [c.metadata.get("chunk_id") for c in batch]
+
+        print(f"   → Embedding batch {start} to {end}")
 
         vectors = embed_with_retry(embed_model, batch_texts)
 
@@ -151,9 +150,10 @@ def ingest_data():
         metadata = [
             {
                 "source": src,
-                "text": txt,     # <<< THIS IS THE FIX
+                "text": txt,
+                "chunk_id": cid,
             }
-            for src, txt in zip(batch_sources, batch_texts)
+            for src, txt, cid in zip(batch_sources, batch_texts, batch_chunk_ids)
         ]
 
         index.upsert(
@@ -163,6 +163,9 @@ def ingest_data():
             ]
         )
 
+        print(f"      ✔ Uploaded {len(ids)} vectors")
+
+    print("\n🎉 DONE! All chunks uploaded to Pinecone.\n")
 
 
 if __name__ == "__main__":

@@ -1,46 +1,35 @@
-# app.py - Streamlit UI for RAG Chatbot (LangChain v1 LCEL)
-import os
-from dotenv import load_dotenv
+# app_v1.py - Streamlit UI for RAG + Exa fallback with inline numeric citations
 
+import os
 import streamlit as st
+from dotenv import load_dotenv
 
 from pinecone import Pinecone
 from langchain_openai import AzureOpenAIEmbeddings, AzureChatOpenAI
 from langchain_pinecone import PineconeVectorStore
 
-from langchain.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnableMap, RunnablePassthrough, RunnableLambda
+from exa_utils import run_exa_search_and_fetch
 from cqc import should_use_exa
-from exa_utils import run_exa_search
 
 load_dotenv()
 
-# Azure OpenAI keys
+# Azure OpenAI
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION")
 AZURE_OPENAI_EMBED_DEPLOYMENT = os.getenv("AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT")
 AZURE_OPENAI_CHAT_DEPLOYMENT = os.getenv("AZURE_OPENAI_GPT4O_DEPLOYMENT")
 
-# Pinecone keys
+# Pinecone
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX = os.getenv("PINECONE_INDEX")
 
 
-def format_docs(docs):
-    parts = []
-    print(docs)
-    for d in docs:
-        src = d.metadata.get("source")
-        txt = d.page_content or ""
-        parts.append(f"[Source: {src}]\n{txt}")
-    return "\n\n".join(parts)
-
-
+# ---------------------------
+# RAG building
+# ---------------------------
 @st.cache_resource(show_spinner=True)
-@st.cache_resource(show_spinner=True)
-def build_rag_chain():
-    # 1) Embeddings
+def build_retriever_and_llm():
     embeddings = AzureOpenAIEmbeddings(
         azure_endpoint=AZURE_OPENAI_ENDPOINT,
         azure_deployment=AZURE_OPENAI_EMBED_DEPLOYMENT,
@@ -48,43 +37,17 @@ def build_rag_chain():
         api_version=AZURE_OPENAI_API_VERSION,
     )
 
-    # 2) Pinecone
     pc = Pinecone(api_key=PINECONE_API_KEY)
     index = pc.Index(PINECONE_INDEX)
 
-    # 3) Vector store + retriever
     vectorstore = PineconeVectorStore(
         index=index,
         embedding=embeddings,
         text_key="text",
     )
+
     retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
 
-    # 4) Prompt
-    prompt = ChatPromptTemplate.from_template(
-        """
-You are a RAG assistant over a set of PDF documents.
-
-Rules:
-1. ONLY use the information in the provided context.
-2. If you cannot answer fully from the context, say:
-   "I don't know. The answer is not clearly available in the provided documents. Please check the PDFs."
-3. Do not use external knowledge.
-4. Do not hallucinate.
-
----------------------
-Context:
-{context}
----------------------
-
-Question:
-{question}
-
-Answer:
-"""
-    )
-
-    # 5) LLM  ✅ we will return this
     llm = AzureChatOpenAI(
         azure_endpoint=AZURE_OPENAI_ENDPOINT,
         azure_deployment=AZURE_OPENAI_CHAT_DEPLOYMENT,
@@ -93,71 +56,136 @@ Answer:
         temperature=0,
     )
 
-    # 6) Context chain: retriever → format_docs
-    context_chain = retriever | RunnableLambda(format_docs)
+    return retriever, llm
 
-    # 7) LCEL RAG pipeline
-    rag_chain = (
-        RunnableMap(
-            {
-                "question": RunnablePassthrough(),
-                "context": context_chain,
-            }
-        )
-        | prompt
-        | llm
-    )
 
-    # IMPORTANT: return llm as well
-    return rag_chain, retriever, llm
+def build_pdf_context_with_numbers(docs):
+    blocks = []
+    for i, d in enumerate(docs, start=1):
+        src = d.metadata.get("source", "Unknown")
+        txt = d.metadata.get("text") or d.page_content or ""
+        # The model only needs the content; we include (Source: ...) for safety
+        blocks.append(f"[{i}] (Source: {src}) {txt}")
+    return "\n\n".join(blocks)
 
-def answer_query(query, rag_chain, retriever, llm):
-    """
-    Unified RAG + Exa fallback answer logic.
-    Returns: (exa_context_or_None, answer_text, docs)
-    """
 
-    # Step 1: Retrieve from Pinecone
-    docs = retriever.get_relevant_documents(query)
+def ask_llm_pdf_with_citations(llm, context: str, query: str) -> str:
+    prompt = f"""
+You are a RAG assistant over a set of PDF documents.
 
-    # Step 2: Check context quality (CQC)
-    use_exa = should_use_exa(query, docs)
+Rules:
+1. Answer ONLY using the provided context.
+2. When referencing any information from context, insert an inline citation in this format:
+   **[Chunk X | Source: filename.pdf]**
+3. Multiple citations may appear in one sentence if needed.
+4. At the end add a **Sources Used** section listing each unique citation used.
+5. If the answer is not fully supported by context, reply:
+   "I don't know. The answer is not clearly available in the provided documents. Please check the PDFs."
 
-    # Step 3: If Pinecone weak → Exa fallback
-    if use_exa:
-        exa_context = run_exa_search(query)
-
-        final_prompt = f"""
-You are a helpful assistant. Use ONLY the following context to answer.
-
-Context:
-{exa_context}
+------------------------
+NUMBERED PDF CONTEXT:
+{context}
+------------------------
 
 Question:
 {query}
 
-If the answer is not clearly in the context, say:
-"I don't know. The answer is not clearly available in the provided documents or web results."
+Answer (with inline citations):
 """
+    resp = llm.invoke(prompt)
+    return resp.content
 
-        resp = llm.invoke(final_prompt)
-        answer_text = getattr(resp, "content", str(resp))
 
-        return exa_context, answer_text, docs
-
-    # Step 4: Pinecone context is OK → use normal RAG chain
-    resp = rag_chain.invoke(query)
-    answer_text = getattr(resp, "content", str(resp))
-
-    return None, answer_text, docs
-def main():
-    st.set_page_config(page_title="GenAI RAG Bot", page_icon="🤖", layout="wide")
-
-    st.title("🤖 GenAI RAG Chatbot (LangChain v1)")
-    st.markdown(
-        "Ask questions based on your **PDF knowledge base** "
-        "(Azure OpenAI + Pinecone)."
+def ask_llm_exa_with_citations(llm, exa_context: str, query: str, exa_sources: list) -> str:
+    sources_block = "\n".join(
+        f"[{s['index']}] {s['title']} - {s['url']}" for s in exa_sources
     )
+
+    prompt = f"""
+You are a factual assistant over WEB sources provided by Exa.
+
+Rules:
+1. Answer ONLY using the provided context.
+2. When referencing any information from context, insert an inline citation in this format:
+   **[Chunk X | Source: filename]**
+3. Multiple citations may appear in one sentence if needed.
+4. At the end add a **Sources Used** section listing each unique citation used.
+5. If the answer is not fully supported by context, reply:
+   "I don't know. The answer is not clearly available in the provided documents. Please check the PDFs."
+
+
+------------------------
+NUMBERED WEB CONTEXT:
+{exa_context}
+------------------------
+
+SOURCES:
+{sources_block}
+
+Question:
+{query}
+
+Answer (with inline citations):
+"""
+    resp = llm.invoke(prompt)
+    return resp.content
+
+
+def answer_query(query: str, retriever, llm):
+    """
+    Returns:
+      answer_text: str
+      source_info: dict with keys:
+           - "type": "pdf" or "exa"
+           - "pdf_sources": list of {"index", "source"}   (for pdf)
+           - "exa_sources": list of {"index", "title", "url"} (for exa)
+    """
+
+    # 1) retrieve from Pinecone
+    docs = retriever.get_relevant_documents(query)
+    print(docs)
+    # 2) Check context quality using LLM-based judge
+    use_exa = should_use_exa(query, docs, llm, debug=False)
+    
+    if use_exa:
+        exa_context, exa_sources = run_exa_search_and_fetch(query)
+        if not exa_context:
+            return (
+                "I don't know. The answer is not clearly available in the provided documents or web results.",
+                {"type": "none"},
+            )
+
+        answer = ask_llm_exa_with_citations(llm, exa_context, query, exa_sources)
+        return answer, {"type": "exa", "exa_sources": exa_sources}
+
+    # 3) PDF mode
+    pdf_context = build_pdf_context_with_numbers(docs)
+    answer = ask_llm_pdf_with_citations(llm, pdf_context, query)
+
+    pdf_sources = [
+        {"index": i + 1, "source": d.metadata.get("source", "Unknown")}
+        for i, d in enumerate(docs)
+    ]
+
+    return answer, {"type": "pdf", "pdf_sources": pdf_sources}
+
+
+# ---------------------------
+# Streamlit UI
+# ---------------------------
+def main():
+    st.set_page_config(
+        page_title="GenAI RAG Bot (PDF + Exa)",
+        page_icon="🤖",
+        layout="wide",
+    )
+
+    st.title("🤖 GenAI RAG Chatbot (PDF + Exa with Inline Citations)")
+    # st.markdown(
+    #     "• First tries to answer from your **PDF knowledge base** (Pinecone).\n"
+    #     "• If context is weak, it falls back to **Exa web search+fetch**.\n"
+    #     "• All answers use **inline numeric citations** like `[1]`, `[2]`."
+    # )
 
     if "history" not in st.session_state:
         st.session_state.history = []
@@ -165,72 +193,79 @@ def main():
     with st.sidebar:
         st.header("⚙️ Settings")
         st.markdown(f"**Pinecone Index:** `{PINECONE_INDEX}`")
-        st.markdown("**Top K Chunks:** 5")
         if st.button("🧹 Clear Chat History"):
             st.session_state.history = []
-            st.success("History cleared")
+            st.rerun()
 
-    with st.spinner("Loading RAG pipeline..."):
-        rag_chain, retriever, llm = build_rag_chain()
+    with st.spinner("Loading retriever + LLM..."):
+        retriever, llm = build_retriever_and_llm()
 
-
-    # Show history
+    # Show chat history
     for msg in st.session_state.history:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
-            if msg["role"] == "assistant" and msg.get("context"):
-                with st.expander("📚 Retrieved Context"):
-                    for i, ctx in enumerate(msg["context"], start=1):
-                        st.markdown(f"**Chunk {i}** — *{ctx['source']}*")
-                        st.write(ctx["text"])
-                        st.markdown("---")
+            if msg["role"] == "assistant":
+                src_info = msg.get("sources")
+                if not src_info:
+                    continue
+                if src_info["type"] == "pdf":
+                    pdf_sources = src_info.get("pdf_sources", [])
+                    if pdf_sources:
+                        with st.expander("📁 PDF Sources"):
+                            for s in pdf_sources:
+                                st.markdown(f"[{s['index']}] `{s['source']}`")
+                elif src_info["type"] == "exa":
+                    exa_sources = src_info.get("exa_sources", [])
+                    if exa_sources:
+                        with st.expander("🌐 Web Sources (Exa)"):
+                            for s in exa_sources:
+                                title = s.get("title", "Unknown")
+                                url = s.get("url", "")
+                                st.markdown(f"[{s['index']}] **{title}**")
+                                if url:
+                                    st.markdown(f"[Open]({url})")
 
-    user_query = st.chat_input("Type your question here...")
+    # New query
+    user_query = st.chat_input("Ask a question...")
 
     if user_query:
-        # Show user question
+        # display user msg
         with st.chat_message("user"):
             st.write(user_query)
+        st.session_state.history.append(
+            {"role": "user", "content": user_query}
+        )
 
-        # Run RAG
+        # assistant response
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                exa_used_context, answer, docs = answer_query(
-                    user_query, rag_chain, retriever, llm
-                )
+                answer_text, source_info = answer_query(user_query, retriever, llm)
+                st.write(answer_text)
 
+                # Also display sources for this turn
+                if source_info["type"] == "pdf":
+                    pdf_sources = source_info.get("pdf_sources", [])
+                    if pdf_sources:
+                        with st.expander("📁 PDF Sources"):
+                            for s in pdf_sources:
+                                st.markdown(f"[{s['index']}] `{s['source']}`")
+                elif source_info["type"] == "exa":
+                    exa_sources = source_info.get("exa_sources", [])
+                    if exa_sources:
+                        with st.expander("🌐 Web Sources (Exa)"):
+                            for s in exa_sources:
+                                title = s.get("title", "Unknown")
+                                url = s.get("url", "")
+                                st.markdown(f"[{s['index']}] **{title}**")
+                                if url:
+                                    st.markdown(f"[Open]({url})")
 
-                if exa_used_context:
-                    st.warning("⚠️ Pinecone context weak → Used EXA AI fallback")
-                answer = getattr(answer, "content", str(answer))
-
-                # Get context docs
-                docs = retriever.get_relevant_documents(user_query)
-                # st.write(docs)
-                ctx_list = [
-                    {
-                        "source": d.metadata.get("source"),
-                        "text": d.page_content,
-                    }
-                    for d in docs
-                ]
-
-                st.write(answer)
-                with st.expander("📚 Retrieved Context Chunks"):
-                    for i, ctx in enumerate(ctx_list, start=1):
-                        st.markdown(f"**Chunk {i}** — *{ctx['source']}*")
-                        st.write(ctx["text"])
-                        st.markdown("---")
-
-                # Save to history
-                st.session_state.history.append(
-                    {"role": "user", "content": user_query}
-                )
+                # push assistant msg + sources to history
                 st.session_state.history.append(
                     {
                         "role": "assistant",
-                        "content": answer,
-                        "context": ctx_list,
+                        "content": answer_text,
+                        "sources": source_info,
                     }
                 )
 

@@ -1,51 +1,97 @@
-# cqc.py
-import re
+# cqc.py  -- LLM-based Context Quality Check (CQC)
 
-def clean_text(t: str) -> str:
-    if not t:
-        return ""
-    return re.sub(r"\s+", " ", t).strip()
+from typing import List
+from langchain_core.documents import Document
 
 
-def should_use_exa(query: str, docs: list) -> bool:
+def _format_docs_for_cqc(
+    docs: List[Document],
+    max_docs: int = 4,
+    max_chars_per_doc: int = 700,
+) -> str:
     """
-    Decide if Pinecone retrieval is weak and we should fallback to Exa AI.
-    This is the heart of the Context Quality Check (CQC).
+    Build a compact context string for the LLM judge.
+    We don't need full chunks, just enough to decide if it's relevant.
+    """
+    parts = []
+    for i, d in enumerate(docs[:max_docs], start=1):
+        src = d.metadata.get("source", "Unknown")
+        text = d.metadata.get("text") or d.page_content or ""
+        text = text.strip().replace("\n", " ")
+
+        if len(text) > max_chars_per_doc:
+            text = text[:max_chars_per_doc] + "..."
+
+        parts.append(f"[{i} | Source: {src}]\n{text}")
+
+    return "\n\n".join(parts)
+
+
+def should_use_exa(
+    query: str,
+    docs: List[Document],
+    llm,
+    debug: bool = False,
+) -> bool:
+    """
+    LLM-based Context Quality Check.
+
+    Returns:
+        True  -> context is NOT sufficient, use Exa
+        False -> context is sufficient, use PDFs (Pinecone RAG)
+
+    Logic:
+    - If no docs -> immediately use Exa
+    - Otherwise ask the LLM:
+        "Is this context enough to answer fully and accurately?"
     """
 
-    # 1) No documents returned
-    if len(docs) == 0:
-        print("CQC: No documents retrieved → Exa needed")
+    # 1) No docs -> must fall back
+    if not docs:
+        if debug:
+            print("CQC-LLM: No docs retrieved -> USE_EXA")
         return True
 
-    # Extract text
-    chunk_texts = [
-        clean_text(
-            d.metadata.get("text")
-            or d.page_content
-            or ""
-        ) for d in docs
-    ]
+    # 2) Build compact context view
+    context_view = _format_docs_for_cqc(docs)
+    print("context_view :- ",context_view)
+    judge_prompt = f"""
+You are a context quality judge in a RAG system.
 
-    # 2) All chunks empty
-    if all(t == "" for t in chunk_texts):
-        print("CQC: All retrieved chunks empty → Exa needed")
+You are given:
+- A user question
+- Several retrieved context chunks from a vector database (PDFs)
+
+Your ONLY job is to decide whether these chunks contain enough information
+to answer the question fully and accurately.
+
+Rules:
+1. If the context clearly contains enough info to answer the question,
+   respond with exactly: USE_PDF
+2. If the context is missing key information, is too vague, unrelated,
+   or only partially helpful, respond with exactly: USE_EXA
+3. Do NOT provide an explanation. ONLY respond with one token:
+   USE_PDF or USE_EXA
+
+--------------------
+Context Chunks:
+{context_view}
+--------------------
+
+Question:
+{query}
+
+Your answer (USE_PDF or USE_EXA):
+"""
+
+    resp = llm.invoke(judge_prompt)
+    decision = resp.content.strip().upper()
+    
+    if debug:
+        print(f"CQC-LLM decision raw: {decision}")
+
+    if decision.startswith("USE_PDF"):
+        return False  # i.e. don't use Exa
+    else:
+        # Default to Exa if anything weird
         return True
-
-    # 3) Total context too small (< 150 chars)
-    combined = " ".join(chunk_texts).strip()
-    if len(combined) < 150:
-        print("CQC: Context too small → Exa needed")
-        return True
-
-    # 4) Keyword overlap check (semantic relevance)
-    q_words = [w for w in query.lower().split() if len(w) > 3]
-    hits = sum(1 for w in q_words if w in combined.lower())
-
-    if hits == 0:
-        print("CQC: Query keywords not found in context → Exa needed")
-        return True
-
-    # 5) PASS — Pinecone context is good
-    print("CQC: Pinecone context OK")
-    return False
