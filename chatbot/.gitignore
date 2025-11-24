@@ -1,0 +1,57 @@
+# -------------------------
+# Python
+# -------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pytest_cache/
+*.DS_Store
+
+# -------------------------
+# Virtual Environment
+# -------------------------
+.venv/
+env/
+venv/
+
+# -------------------------
+# Environment Variables
+# -------------------------
+.env
+.env.local
+.env.*.local
+
+# -------------------------
+# Project Data
+# -------------------------
+data/
+*.pdf
+*.docx
+*.txt
+
+# If you store embeddings locally (optional)
+embeddings/
+vectorstore/
+
+# -------------------------
+# Logs
+# -------------------------
+*.log
+
+# -------------------------
+# Editor/OS files
+# -------------------------
+.DS_Store
+Thumbs.db
+
+# -------------------------
+# VSCode
+# -------------------------
+.vscode/
+.history/
+
+# -------------------------
+# Streamlit cache
+# -------------------------
+.streamlit/
