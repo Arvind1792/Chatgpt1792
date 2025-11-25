@@ -8,7 +8,7 @@ load_dotenv()
 EXA_API_KEY = os.getenv("EXA_API_KEY")
 
 SEARCH_URL = "https://api.exa.ai/search"
-FETCH_URL = "https://api.exa.ai/contents"
+CONTENTS_URL = "https://api.exa.ai/contents"
 
 HEADERS = {
     "x-api-key": EXA_API_KEY,
@@ -17,84 +17,68 @@ HEADERS = {
 
 
 def run_exa_search_and_fetch(query: str):
-    """
-    Exa Search -> Fetch full text.
-    Returns:
-        context_with_numbers (str): text chunks numbered [1], [2], ...
-        sources (list): [{index, title, url}]
-    """
+    print("🔥 Using Exa Search + Contents...")
 
-    print("🔥 Using Exa Search + Fetch...")
+    # -------------------------------
+    # 1) SEARCH
+    # -------------------------------
+    resp = requests.post(
+        SEARCH_URL,
+        json={
+            "query": query,
+            "useAutoprompt": True,
+            "numResults": 5
+        },
+        headers=HEADERS,
+    )
 
-    # STEP 1 — SEARCH
-    search_body = {
-        "query": query,
-        "useAutoprompt": True,
-        "numResults": 5,
-    }
+    data = resp.json()
 
-    resp = requests.post(SEARCH_URL, json=search_body, headers=HEADERS)
-    try:
-        search_data = resp.json()
-    except Exception:
-        print("❌ EXA search: non-JSON response")
+    urls = [r.get("url") for r in data.get("results", []) if r.get("url")]
+    print("🔗 Exa URLs found:", urls)
+
+    if not urls:
         return "", []
 
-    if "error" in search_data:
-        print("❌ Exa Search Error:", search_data["error"])
-        return "", []
+    # -------------------------------
+    # 2) CONTENTS (FETCH)
+    # -------------------------------
+    fetch_resp = requests.post(
+        CONTENTS_URL,
+        json={
+            "urls": urls,
+            "text": True,              # NEW — returns extracted text
+            "summary": True,           # NEW — returns AI-generated summary
+            "summaryMaxLength": 4000,  # NEW — summary length
+        },
+        headers=HEADERS,
+    )
 
-    ids = [r.get("id") for r in search_data.get("results", []) if r.get("id")]
-    if not ids:
-        print("❌ Exa returned no results")
-        return "", []
+    fetch_data = fetch_resp.json()
+    # print("📥 Contents Response:", fetch_data)
 
-    # STEP 2 — FETCH CONTENT
-    fetch_body = {
-        "ids": ids,
-        "includeText": True,
-        "numCharacters": 4000,
-    }
-
-    fetch_resp = requests.post(FETCH_URL, json=fetch_body, headers=HEADERS)
-    try:
-        fetch_data = fetch_resp.json()
-    except Exception:
-        print("❌ EXA fetch: non-JSON response")
-        return "", []
-
-    if "error" in fetch_data:
-        print("❌ Exa Fetch Error:", fetch_data["error"])
-        return "", []
-
-    numbered_blocks = []
+    blocks = []
     sources = []
     idx = 1
 
     for item in fetch_data.get("results", []):
         title = item.get("title", "Unknown")
-        url = item.get("url", "")
-        text = item.get("text", "")
+        url = item.get("url")
+        text = item.get("text")
+        summary = item.get("summary")
 
-        if not text or not text.strip():
+        # Prefer extracted text, fallback to summary
+        content = text or summary
+
+        if not content:
             continue
 
-        # for the LLM context
-        numbered_blocks.append(f"[{idx}] {text}")
-
-        # for displaying sources
-        sources.append(
-            {
-                "index": idx,
-                "title": title,
-                "url": url,
-            }
-        )
-
+        blocks.append(f"[{idx}] {content}")
+        sources.append({"index": idx, "title": title, "url": url})
         idx += 1
 
-    if not numbered_blocks:
+    if not blocks:
+        print("⚠️ No content or summary returned.")
         return "", []
 
-    full_context = "\n\n".join(numbered_blocks)
-    return full_context, sources
+    return "\n\n".join(blocks), sources

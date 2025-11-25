@@ -76,7 +76,7 @@ You are a RAG assistant over a set of PDF documents.
 Rules:
 1. Answer ONLY using the provided context.
 2. When referencing any information from context, insert an inline citation in this format:
-   **[Chunk X | Source: filename.pdf]**
+   **[Source: filename.pdf]**
 3. Multiple citations may appear in one sentence if needed.
 4. At the end add a **Sources Used** section listing each unique citation used.
 5. If the answer is not fully supported by context, reply:
@@ -107,7 +107,7 @@ You are a factual assistant over WEB sources provided by Exa.
 Rules:
 1. Answer ONLY using the provided context.
 2. When referencing any information from context, insert an inline citation in this format:
-   **[Chunk X | Source: filename]**
+   **[ Source: title]**
 3. Multiple citations may appear in one sentence if needed.
 4. At the end add a **Sources Used** section listing each unique citation used.
 5. If the answer is not fully supported by context, reply:
@@ -142,13 +142,14 @@ def answer_query(query: str, retriever, llm):
     """
 
     # 1) retrieve from Pinecone
-    docs = retriever.get_relevant_documents(query)
+    docs = retriever.invoke(query)
     print(docs)
     # 2) Check context quality using LLM-based judge
     use_exa = should_use_exa(query, docs, llm, debug=False)
     
     if use_exa:
         exa_context, exa_sources = run_exa_search_and_fetch(query)
+        print(exa_context,exa_sources)
         if not exa_context:
             return (
                 "I don't know. The answer is not clearly available in the provided documents or web results.",

@@ -149,7 +149,7 @@ def main():
             break
 
         # 1) Retrieve from Pinecone
-        docs = retriever.get_relevant_documents(q)
+        docs = retriever.invoke(q)
 
         # 2) Decide PDF vs Exa using LLM-based CQC
         use_exa = should_use_exa(q, docs, llm, debug=True)  

@@ -47,6 +47,21 @@ def load_pdfs(folder_path: str):
 
     return docs
 
+# AZURE_PDF_BASE_URL = os.getenv("AZURE_PDF_BASE_URL")
+# def load_pdfs_from_azure(folder_path):
+#     docs = []
+#     for file in os.listdir(folder_path):
+#         if file.lower().endswith(".pdf"):
+#             loader = PyPDFLoader(os.path.join(folder_path, file))
+#             pdf_pages = loader.load()
+
+#             for p in pdf_pages:
+#                 p.metadata["source"] = f"{AZURE_PDF_BASE_URL}/{file}"
+            
+#             docs.extend(pdf_pages)
+    
+#     return docs
+
 
 # --------------------------
 # Retry Handler for Embeddings
