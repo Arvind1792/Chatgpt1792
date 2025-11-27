@@ -10,7 +10,8 @@ from langchain_pinecone import PineconeVectorStore
 
 from exa_utils import run_exa_search_and_fetch
 from cqc import should_use_exa
-
+from summary_agent import get_medium_summary_agent
+from azure.storage.blob import BlobServiceClient
 load_dotenv()
 
 # Azure OpenAI
@@ -23,6 +24,37 @@ AZURE_OPENAI_CHAT_DEPLOYMENT = os.getenv("AZURE_OPENAI_GPT4O_DEPLOYMENT")
 # Pinecone
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX = os.getenv("PINECONE_INDEX")
+
+from langchain_core.messages import BaseMessage
+
+def extract_agent_output(response):
+    """
+    Handles all possible output types from create_agent.invoke().
+    Supports: AIMessage, BaseMessage, dict with 'messages', string.
+    """
+    # Case 1: AIMessage / BaseMessage
+    if isinstance(response, BaseMessage):
+        return response.content
+
+    # Case 2: dict with messages[] (graph-style)
+    if isinstance(response, dict):
+        # If result has messages list
+        if "messages" in response and isinstance(response["messages"], list):
+            msgs = response["messages"]
+            if msgs:
+                last = msgs[-1]
+                # last might be BaseMessage or dict
+                return getattr(last, "content", str(last))
+
+        # Generic fallback
+        return str(response)
+
+    # Case 3: raw string
+    if isinstance(response, str):
+        return response
+
+    # Final fallback
+    return str(response)
 
 
 # ---------------------------
@@ -59,31 +91,47 @@ def build_retriever_and_llm():
     return retriever, llm
 
 
+# ---------------------------
+# PDF Context Builder
+# ---------------------------
 def build_pdf_context_with_numbers(docs):
+    """
+    Produces:
+    [1] (Source: URL) text
+    [2] (Source: URL) text
+    """
     blocks = []
     for i, d in enumerate(docs, start=1):
-        src = d.metadata.get("source", "Unknown")
+        src = d.metadata.get("source", "Unknown URL")
         txt = d.metadata.get("text") or d.page_content or ""
-        # The model only needs the content; we include (Source: ...) for safety
         blocks.append(f"[{i}] (Source: {src}) {txt}")
     return "\n\n".join(blocks)
 
 
+# ---------------------------
+# PDF Answer with Inline Citations
+# ---------------------------
 def ask_llm_pdf_with_citations(llm, context: str, query: str) -> str:
     prompt = f"""
-You are a RAG assistant over a set of PDF documents.
+You are a RAG assistant answering ONLY from the PDF context provided.
 
 Rules:
-1. Answer ONLY using the provided context.
-2. When referencing any information from context, insert an inline citation in this format:
-   **[Source: filename.pdf]**
-3. Multiple citations may appear in one sentence if needed.
-4. At the end add a **Sources Used** section listing each unique citation used.
-5. If the answer is not fully supported by context, reply:
-   "I don't know. The answer is not clearly available in the provided documents. Please check the PDFs."
+1. Use ONLY the content inside the given context.
+2. When you use any sentence from the context, add an inline citation:
+   **[Source: <URL>]**
+3. If multiple URLs support the same sentence, include multiple citations.
+4. At the end of your answer produce:
+
+   **Sources Used**
+   - <URL1>
+   - <URL2>
+   - ...
+
+5. If the answer cannot be derived from the context, say:
+   "I don't know. The answer is not available in the provided PDFs."
 
 ------------------------
-NUMBERED PDF CONTEXT:
+PDF CONTEXT:
 {context}
 ------------------------
 
@@ -96,26 +144,29 @@ Answer (with inline citations):
     return resp.content
 
 
-def ask_llm_exa_with_citations(llm, exa_context: str, query: str, exa_sources: list) -> str:
+# ---------------------------
+# Exa Answer with Citations
+# ---------------------------
+def ask_llm_exa_with_citations(llm, exa_context: str, query: str, exa_sources: list):
     sources_block = "\n".join(
-        f"[{s['index']}] {s['title']} - {s['url']}" for s in exa_sources
+        f"[{s['index']}] {s['title']} - {s['url']}"
+        for s in exa_sources
     )
 
     prompt = f"""
-You are a factual assistant over WEB sources provided by Exa.
+You are a factual assistant using ONLY the Exa web context.
 
 Rules:
-1. Answer ONLY using the provided context.
-2. When referencing any information from context, insert an inline citation in this format:
-   **[ Source: title]**
-3. Multiple citations may appear in one sentence if needed.
-4. At the end add a **Sources Used** section listing each unique citation used.
-5. If the answer is not fully supported by context, reply:
-   "I don't know. The answer is not clearly available in the provided documents. Please check the PDFs."
-
+1. Use ONLY the provided context.
+2. When referencing a sentence, include:
+   **[Source: <title>]**
+3. Multiple citations are allowed.
+4. At the end produce a **Sources Used** section with titles+urls.
+5. If not available in context, say:
+   "I don't know. The answer is not in the provided documents."
 
 ------------------------
-NUMBERED WEB CONTEXT:
+WEB CONTEXT:
 {exa_context}
 ------------------------
 
@@ -125,46 +176,42 @@ SOURCES:
 Question:
 {query}
 
-Answer (with inline citations):
+Answer:
 """
     resp = llm.invoke(prompt)
     return resp.content
 
 
+# ---------------------------
+# Decision + Answering Logic
+# ---------------------------
 def answer_query(query: str, retriever, llm):
-    """
-    Returns:
-      answer_text: str
-      source_info: dict with keys:
-           - "type": "pdf" or "exa"
-           - "pdf_sources": list of {"index", "source"}   (for pdf)
-           - "exa_sources": list of {"index", "title", "url"} (for exa)
-    """
-
-    # 1) retrieve from Pinecone
     docs = retriever.invoke(query)
+    print(f"[DEBUG] Retrieved {len(docs)} docs from Pinecone.")
     print(docs)
-    # 2) Check context quality using LLM-based judge
+    # Should fallback to Exa?
     use_exa = should_use_exa(query, docs, llm, debug=False)
-    
+
     if use_exa:
         exa_context, exa_sources = run_exa_search_and_fetch(query)
-        print(exa_context,exa_sources)
         if not exa_context:
             return (
-                "I don't know. The answer is not clearly available in the provided documents or web results.",
+                "I don't know. The answer is not clearly available in the provided PDFs or web.",
                 {"type": "none"},
             )
 
         answer = ask_llm_exa_with_citations(llm, exa_context, query, exa_sources)
         return answer, {"type": "exa", "exa_sources": exa_sources}
 
-    # 3) PDF mode
+    # PDF Answer Mode
     pdf_context = build_pdf_context_with_numbers(docs)
     answer = ask_llm_pdf_with_citations(llm, pdf_context, query)
 
     pdf_sources = [
-        {"index": i + 1, "source": d.metadata.get("source", "Unknown")}
+        {
+            "index": i + 1,
+            "source": d.metadata.get("source", "Unknown URL")
+        }
         for i, d in enumerate(docs)
     ]
 
@@ -182,11 +229,6 @@ def main():
     )
 
     st.title("🤖 GenAI RAG Chatbot (PDF + Exa with Inline Citations)")
-    # st.markdown(
-    #     "• First tries to answer from your **PDF knowledge base** (Pinecone).\n"
-    #     "• If context is weak, it falls back to **Exa web search+fetch**.\n"
-    #     "• All answers use **inline numeric citations** like `[1]`, `[2]`."
-    # )
 
     if "history" not in st.session_state:
         st.session_state.history = []
@@ -198,70 +240,90 @@ def main():
             st.session_state.history = []
             st.rerun()
 
-    with st.spinner("Loading retriever + LLM..."):
-        retriever, llm = build_retriever_and_llm()
+    retriever, llm = build_retriever_and_llm()
 
-    # Show chat history
+    # Replay chat history
     for msg in st.session_state.history:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
-            if msg["role"] == "assistant":
-                src_info = msg.get("sources")
-                if not src_info:
-                    continue
-                if src_info["type"] == "pdf":
-                    pdf_sources = src_info.get("pdf_sources", [])
-                    if pdf_sources:
-                        with st.expander("📁 PDF Sources"):
-                            for s in pdf_sources:
-                                st.markdown(f"[{s['index']}] `{s['source']}`")
-                elif src_info["type"] == "exa":
-                    exa_sources = src_info.get("exa_sources", [])
-                    if exa_sources:
-                        with st.expander("🌐 Web Sources (Exa)"):
-                            for s in exa_sources:
-                                title = s.get("title", "Unknown")
-                                url = s.get("url", "")
-                                st.markdown(f"[{s['index']}] **{title}**")
-                                if url:
-                                    st.markdown(f"[Open]({url})")
 
-    # New query
-    user_query = st.chat_input("Ask a question...")
+            # Show citations
+            src = msg.get("sources")
+            if not src:
+                continue
 
+            if src["type"] == "pdf":
+                with st.expander("📁 PDF Sources"):
+                    for s in src.get("pdf_sources", []):
+                        url = s["source"]
+                        st.markdown(f"[{s['index']}] 📄 [Open PDF]({url})")
+
+            elif src["type"] == "exa":
+                with st.expander("🌐 Web Sources (Exa)"):
+                    for s in src.get("exa_sources", []):
+                        st.markdown(f"[{s['index']}] **{s['title']}**")
+                        st.markdown(f"[Open]({s['url']})")
+
+    # # ======================================================
+    # # PDF Summarizer Section (New)
+    # # ======================================================
+    # st.subheader("📄 PDF Summarizer (Medium Summary)")
+
+
+
+    # def list_pdfs_in_azure():
+    #     conn = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    #     container = os.getenv("AZURE_CONTAINER")
+    #     service = BlobServiceClient.from_connection_string(conn)
+    #     container_client = service.get_container_client(container)
+    #     return [b.name for b in container_client.list_blobs() if b.name.lower().endswith(".pdf")]
+
+    # pdf_files = list_pdfs_in_azure()
+
+    # if pdf_files:
+    #     selected_pdf = st.selectbox("Choose PDF to summarize:", pdf_files)
+
+    #     if st.button("Summarize Selected PDF"):
+    #         st.info(f"Summarizing: {selected_pdf}")
+
+    #         agent = get_medium_summary_agent()
+    #         response = agent.invoke({
+    #             "messages": [
+    #                 {"role": "user", "content": f"Summarize {selected_pdf}"}
+    #             ]
+    #         })
+
+    #         st.success("Summary:")
+    #         summary_text = extract_agent_output(response)
+    #         st.write(summary_text)
+    # else:
+    #     st.warning("No PDFs found in Azure Blob Storage")
+
+    # User query
+    user_query = st.chat_input("Ask something...")
+   
     if user_query:
-        # display user msg
+        st.session_state.history.append({"role": "user", "content": user_query})
         with st.chat_message("user"):
             st.write(user_query)
-        st.session_state.history.append(
-            {"role": "user", "content": user_query}
-        )
 
-        # assistant response
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 answer_text, source_info = answer_query(user_query, retriever, llm)
                 st.write(answer_text)
-
-                # Also display sources for this turn
+                # st.write(response["messages"][-1]["content"])
+                # Show sources immediately
                 if source_info["type"] == "pdf":
-                    pdf_sources = source_info.get("pdf_sources", [])
-                    if pdf_sources:
-                        with st.expander("📁 PDF Sources"):
-                            for s in pdf_sources:
-                                st.markdown(f"[{s['index']}] `{s['source']}`")
-                elif source_info["type"] == "exa":
-                    exa_sources = source_info.get("exa_sources", [])
-                    if exa_sources:
-                        with st.expander("🌐 Web Sources (Exa)"):
-                            for s in exa_sources:
-                                title = s.get("title", "Unknown")
-                                url = s.get("url", "")
-                                st.markdown(f"[{s['index']}] **{title}**")
-                                if url:
-                                    st.markdown(f"[Open]({url})")
+                    with st.expander("📁 PDF Sources"):
+                        for s in source_info.get("pdf_sources", []):
+                            st.markdown(f"[{s['index']}] 📄 [Open PDF]({s['source']})")
 
-                # push assistant msg + sources to history
+                elif source_info["type"] == "exa":
+                    with st.expander("🌐 Web Sources (Exa)"):
+                        for s in source_info.get("exa_sources", []):
+                            st.markdown(f"[{s['index']}] **{s['title']}**")
+                            st.markdown(f"[Open]({s['url']})")
+
                 st.session_state.history.append(
                     {
                         "role": "assistant",

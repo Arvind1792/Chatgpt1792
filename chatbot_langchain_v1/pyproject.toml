@@ -22,7 +22,8 @@ dependencies = [
     "pypdf>=4.0.0",
     "streamlit>=1.30.0",
     "tiktoken>=0.7.0",
-    "requests>=2.31.0"
+    "requests>=2.31.0",
+    "azure-storage-blob (>=12.27.1,<13.0.0)"
 ]
 
 [build-system]

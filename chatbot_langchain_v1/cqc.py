@@ -54,7 +54,7 @@ def should_use_exa(
 
     # 2) Build compact context view
     context_view = _format_docs_for_cqc(docs)
-    print("context_view :- ",context_view)
+    # print("context_view :- ",context_view)
     judge_prompt = f"""
 You are a context quality judge in a RAG system.
 
