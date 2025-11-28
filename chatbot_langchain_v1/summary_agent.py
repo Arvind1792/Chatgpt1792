@@ -173,29 +173,29 @@ def summarize_pdf_medium(pdf_name: str) -> str:
 # 7. CREATE AGENT: create_agent (LangChain v1)
 # ======================================================
 
-def get_medium_summary_agent():
-    """
-    New LangChain v1 Agent using create_agent().
-    """
+# def get_medium_summary_agent():
+#     """
+#     New LangChain v1 Agent using create_agent().
+#     """
 
-    llm = get_llm()
+#     llm = get_llm()
 
-    system_prompt = (
-        "You are a PDF summarization agent.\n"
-        "- You ALWAYS produce **medium-length summaries (1–3 paragraphs)**.\n"
-        "- When a user asks to summarize a PDF, you MUST call the tool:\n"
-        "  summarize_pdf_medium(pdf_name)\n"
-        "- If user does not specify which PDF, ask for the PDF name.\n"
-        "- NO bullet points unless user explicitly requests."
-    )
+#     system_prompt = (
+#         "You are a PDF summarization agent.\n"
+#         "- You ALWAYS produce **medium-length summaries (1–3 paragraphs)**.\n"
+#         "- When a user asks to summarize a PDF, you MUST call the tool:\n"
+#         "  summarize_pdf_medium(pdf_name)\n"
+#         "- If user does not specify which PDF, ask for the PDF name.\n"
+#         "- NO bullet points unless user explicitly requests."
+#     )
 
-    agent = create_agent(
-        model=llm,
-        tools=[summarize_pdf_medium],
-        system_prompt=system_prompt
-    )
+#     agent = create_agent(
+#         model=llm,
+#         tools=[summarize_pdf_medium],
+#         system_prompt=system_prompt
+#     )
 
-    return agent
+#     return agent
 
 
 # ======================================================
