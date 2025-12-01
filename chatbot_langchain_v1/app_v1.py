@@ -24,7 +24,7 @@ PINECONE_INDEX = os.getenv("PINECONE_INDEX")
 from langchain_core.messages import BaseMessage
 
 from summary_agent import summarize_pdf_medium
-from QnA import ask_pdf_question
+from qna import ask_pdf_question
 
 import re
 
