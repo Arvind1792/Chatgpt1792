@@ -10,8 +10,6 @@ from langchain_core.tools import tool
 from azure.storage.blob import generate_blob_sas, BlobSasPermissions
 from exa_utils import run_exa_search_and_fetch
 from cqc import should_use_exa
-# from summary_agent import get_summary_agent
-# from azure.storage.blob import BlobServiceClient
 load_dotenv()
 
 # Azure OpenAI
@@ -108,13 +106,6 @@ def ask_llm_pdf_with_citations(llm, context: str, query: str,pdf_sources: list) 
     And clickable links in the Sources list.
     """
 
-    # Build numbered source map:
-    #
-    # pdf_sources = [
-    #   {"index": 1, "source": "https://url"},
-    #   {"index": 2, "source": "https://url2"}
-    # ]
-    #
     numbered_sources_text = "\n".join(
         f"[{s['index']}] <{s['source']}>"
         for s in pdf_sources
@@ -246,10 +237,6 @@ def answer_query(query: str):
 
     return answer, {"type": "pdf", "pdf_sources": pdf_sources}
 
-
-# from app_v1 import answer_query, build_retriever_and_llm
-
-# retriever, llm = build_retriever_and_llm()
 
 @tool
 def ask_pdf_question(query: str) -> str:

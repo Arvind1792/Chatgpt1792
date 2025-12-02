@@ -1,11 +1,8 @@
-# app_v1.py - Streamlit UI for RAG + Exa fallback with inline numeric citations
 
 import os
 import streamlit as st
 from dotenv import load_dotenv
 
-# from summary_agent import get_summary_agent
-# from azure.storage.blob import BlobServiceClient
 load_dotenv()
 
 from langchain.agents import create_agent
@@ -22,7 +19,6 @@ AZURE_OPENAI_CHAT_DEPLOYMENT = os.getenv("AZURE_OPENAI_GPT4O_DEPLOYMENT")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX = os.getenv("PINECONE_INDEX")
 
-# from langchain_core.messages import BaseMessage
 
 from summary_agent import summarize_pdf
 from qna import ask_pdf_question
@@ -152,12 +148,7 @@ def extract_agent_output(response):
 
 
 def get_smart_pdf_agent():
-    # llm = AzureChatOpenAI(
-    #     azure_endpoint=os.getenv("AZURE_OPENAI_AGENT_ENDPOINT"),
-    #     api_key=os.getenv("AZURE_OPENAI_AGENT_API_KEY"),
-    #     azure_deployment=os.getenv("AZURE_OPENAI_AGENT_GPT5_DEPLOYMENT"),
-    #     api_version=os.getenv("AZURE_OPENAI_AGENT_API_VERSION")
-    # ) 
+
     llm = AzureChatOpenAI(
         azure_endpoint=os.getenv("AZURE_OPENAI_AGENT_ENDPOINT"),
         api_key=os.getenv("AZURE_OPENAI_AGENT_API_KEY"),
@@ -231,72 +222,6 @@ Rules:
     )
 
     return agent
-
-# ---------------------------
-# RAG building
-# ---------------------------
-# @st.cache_resource(show_spinner=True)
-
-# ---------------------------
-# Streamlit UI
-# ---------------------------
-# def main():
-#     st.set_page_config(
-#         page_title="GenAI RAG Bot (PDF + Exa)",
-#         page_icon="🤖",
-#         layout="wide",
-#     )
-
-#     st.title("🤖 GenAI RAG Chatbot (PDF + Exa with Inline Citations)")
-
-#     if "history" not in st.session_state:
-#         st.session_state.history = []
-
-#     with st.sidebar:
-#         st.header("⚙️ Settings")
-#         st.markdown(f"**Pinecone Index:** `{PINECONE_INDEX}`")
-#         if st.button("🧹 Clear Chat History"):
-#             st.session_state.history = []
-#             st.rerun()
-
-
-
-#     # Replay chat history
-#     for msg in st.session_state.history:
-#         with st.chat_message(msg["role"]):
-#             st.write(msg["content"])
-#     # User query
-#     user_query = st.chat_input("Ask something...")
-   
-#     if user_query:
-#         st.session_state.history.append({"role": "user", "content": user_query})
-#         with st.chat_message("user"):
-#             st.write(user_query)
-
-#         with st.chat_message("assistant"):
-#             with st.spinner("Thinking..."):
-#                 agent = get_smart_pdf_agent()
-
-#                 response = agent.invoke({
-#                     "messages": [
-#                         {"role": "user", "content": user_query}
-#                     ]
-#                 })
-#                 print("Agent response:", response)
-#                 answer = extract_agent_output(response)
-
-#                 st.write(answer)
-#                 with st.expander("📁 PDF Sources"):
-#                     for s in pdf_sources:
-#                          st.markdown(f"[{s['index']}] ➜ [{s['source']}]({s['source']})")
-
-#                 st.session_state.history.append(
-#                     {
-#                         "role": "assistant",
-#                         "content": answer,
-#                         "sources": answer,
-#                     }
-#                 )
 
 def main():
     st.set_page_config(
@@ -391,39 +316,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-    # # ======================================================
-    # # PDF Summarizer Section (New)
-    # # ======================================================
-    # st.subheader("📄 PDF Summarizer (Medium Summary)")
-
-
-
-    # def list_pdfs_in_azure():
-    #     conn = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-    #     container = os.getenv("AZURE_CONTAINER")
-    #     service = BlobServiceClient.from_connection_string(conn)
-    #     container_client = service.get_container_client(container)
-    #     return [b.name for b in container_client.list_blobs() if b.name.lower().endswith(".pdf")]
-
-    # pdf_files = list_pdfs_in_azure()
-
-    # if pdf_files:
-    #     selected_pdf = st.selectbox("Choose PDF to summarize:", pdf_files)
-
-    #     if st.button("Summarize Selected PDF"):
-    #         st.info(f"Summarizing: {selected_pdf}")
-
-    #         agent = get_summary_agent()
-    #         response = agent.invoke({
-    #             "messages": [
-    #                 {"role": "user", "content": f"Summarize {selected_pdf}"}
-    #             ]
-    #         })
-
-    #         st.success("Summary:")
-    #         summary_text = extract_agent_output(response)
-    #         st.write(summary_text)
-    # else:
-    #     st.warning("No PDFs found in Azure Blob Storage")
