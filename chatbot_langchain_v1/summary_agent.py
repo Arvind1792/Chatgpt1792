@@ -116,7 +116,7 @@ def build_medium_summary_chain(llm):
     reduce_prompt = ChatPromptTemplate.from_messages([
         (
             "system",
-            "Combine the partial summaries into a MEDIUM summary (1–3 paragraphs). "
+            "Combine the partial summaries into a summary "
             "Write natural flowing text, no bullet points."
         ),
         ("human", "{context}")
@@ -140,15 +140,62 @@ def build_medium_summary_chain(llm):
 
     return map_reduce
 
+def build_hierarchical_summary_chain(llm):
+    """
+    Multi-level hierarchical summarizer.
+    Works even for 200+ page PDFs.
+    """
+
+    # ----- MAP STEP -----
+    map_prompt = ChatPromptTemplate.from_messages([
+        ("system", "Summarize this part of a PDF clearly."),
+        ("human", "{context}")
+    ])
+    map_chain = map_prompt | llm | StrOutputParser()
+
+    # ----- REDUCE STEP -----
+    reduce_prompt = ChatPromptTemplate.from_messages([
+        ("system", "Summarize these partial summaries into a coherent summary."),
+        ("human", "{context}")
+    ])
+    reduce_chain = reduce_prompt | llm | StrOutputParser()
+
+    # Helper: Group lists
+    def group(items, n=10):
+        for i in range(0, len(items), n):
+            yield items[i:i+n]
+
+    def map_reduce(documents: List[Document]) -> str:
+        # 1) MAP over chunks
+        mapped = [map_chain.invoke({"context": d.page_content}) for d in documents]
+
+        # 2) HIERARCHICAL REDUCE
+        # Level 1: Batch-wise summaries
+        batch_summaries = []
+        for batch in group(mapped, 10):  # Groups of 10 chunks
+            combined = "\n\n".join(batch)
+            batch_summary = reduce_chain.invoke({"context": combined})
+            batch_summaries.append(batch_summary)
+            print("batch 1 completed")
+
+        # 3) Level 2: Final summary
+        final_combined = "\n\n".join(batch_summaries)
+        print("Prepairing final_summary")
+        final_summary = reduce_chain.invoke({"context": final_combined})
+        
+        return final_summary.strip()
+
+    return map_reduce
+
 
 # ======================================================
-# 6. TOOL: summarize_pdf_medium
+# 6. TOOL: summarize_pdf
 # ======================================================
 
 @tool
-def summarize_pdf_medium(pdf_name: str) -> str:
+def summarize_pdf(pdf_name: str) -> str:
     """
-    Medium-length PDF summary tool (1–3 paragraphs).
+    PDF summary tool .
     """
 
     llm = get_llm()
@@ -162,7 +209,8 @@ def summarize_pdf_medium(pdf_name: str) -> str:
         return f"No content extracted from PDF '{pdf_name}'."
 
     # STEP 3 — LCEL summarization pipeline
-    summary_chain = build_medium_summary_chain(llm)
+    summary_chain = build_hierarchical_summary_chain(llm)
+    # summary_chain = build_medium_summary_chain(llm)
 
     # STEP 4 — Run summarization
     summary = summary_chain(docs)
@@ -173,7 +221,7 @@ def summarize_pdf_medium(pdf_name: str) -> str:
 # 7. CREATE AGENT: create_agent (LangChain v1)
 # ======================================================
 
-# def get_medium_summary_agent():
+# def get_summary_agent():
 #     """
 #     New LangChain v1 Agent using create_agent().
 #     """
@@ -184,14 +232,14 @@ def summarize_pdf_medium(pdf_name: str) -> str:
 #         "You are a PDF summarization agent.\n"
 #         "- You ALWAYS produce **medium-length summaries (1–3 paragraphs)**.\n"
 #         "- When a user asks to summarize a PDF, you MUST call the tool:\n"
-#         "  summarize_pdf_medium(pdf_name)\n"
+#         "  summarize_pdf(pdf_name)\n"
 #         "- If user does not specify which PDF, ask for the PDF name.\n"
 #         "- NO bullet points unless user explicitly requests."
 #     )
 
 #     agent = create_agent(
 #         model=llm,
-#         tools=[summarize_pdf_medium],
+#         tools=[summarize_pdf],
 #         system_prompt=system_prompt
 #     )
 
@@ -203,9 +251,9 @@ def summarize_pdf_medium(pdf_name: str) -> str:
 # ======================================================
 
 if __name__ == "__main__":
-    agent = get_medium_summary_agent()
+    agent = get_summary_agent()
 
-    print("🚀 Medium PDF Summarizer Agent Ready")
+    print("🚀 PDF Summarizer Agent Ready")
     print("Try: summarize hackaidea.pdf\n")
 
     while True:

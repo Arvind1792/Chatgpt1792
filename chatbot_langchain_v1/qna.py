@@ -10,7 +10,7 @@ from langchain_core.tools import tool
 from azure.storage.blob import generate_blob_sas, BlobSasPermissions
 from exa_utils import run_exa_search_and_fetch
 from cqc import should_use_exa
-# from summary_agent import get_medium_summary_agent
+# from summary_agent import get_summary_agent
 # from azure.storage.blob import BlobServiceClient
 load_dotenv()
 
@@ -78,7 +78,7 @@ def build_retriever_and_llm():
         api_version=AZURE_OPENAI_API_VERSION,
         temperature=0,
     )
-
+    print("llm is working...")
     return retriever, llm
 
 
